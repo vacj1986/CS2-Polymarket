@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CS2 · Polymarket</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0f1117;
+    --bg2: #181b24;
+    --bg3: #1e2130;
+    --border: #2a2d3a;
+    --text: #e8eaf0;
+    --text2: #8a8fa8;
+    --text3: #555970;
+    --green: #4caf7d;
+    --green-bg: #0d2419;
+    --green-text: #4caf7d;
+    --red: #e05252;
+    --red-bg: #2a0f0f;
+    --blue: #4a9eff;
+    --blue-bg: #0d1e33;
+    --blue-text: #4a9eff;
+    --amber: #f0a030;
+    --amber-bg: #2a1a00;
+    --radius: 8px;
+    --radius-sm: 5px;
+  }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; min-height: 100vh; }
+
+  .container { max-width: 1200px; margin: 0 auto; padding: 0 16px; }
+
+  /* HEADER */
+  header { border-bottom: 1px solid var(--border); padding: 14px 0; }
+  .header-inner { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+  .logo-area { display: flex; align-items: center; gap: 10px; }
+  .logo-box { width: 34px; height: 34px; background: linear-gradient(135deg, #1a4a8a, #0d2a5a); border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; border: 1px solid #2a4a8a; }
+  .logo-box svg { width: 20px; height: 20px; }
+  .logo-title { font-size: 16px; font-weight: 600; color: var(--text); }
+  .logo-sub { font-size: 11px; color: var(--text2); margin-top: 1px; }
+  .header-right { display: flex; align-items: center; gap: 10px; }
+  .status-pill { display: flex; align-items: center; gap: 6px; background: var(--bg2); border: 1px solid var(--border); border-radius: 20px; padding: 5px 12px; font-size: 11px; color: var(--text2); }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); transition: background 0.3s; }
+  .status-dot.loading { background: var(--amber); animation: blink 1s infinite; }
+  .status-dot.error { background: var(--red); }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+  .notif-btn { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 6px 14px; font-size: 12px; color: var(--text2); cursor: pointer; transition: all 0.2s; }
+  .notif-btn:hover { border-color: var(--blue); color: var(--blue); }
+  .notif-btn.on { border-color: var(--green); color: var(--green); background: var(--green-bg); }
+
+  /* STATS BAR */
+  .stats-bar { display: flex; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .stat-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 16px; min-width: 110px; }
+  .stat-val { font-size: 20px; font-weight: 600; color: var(--text); }
+  .stat-label { font-size: 10px; color: var(--text3); margin-top: 2px; text-transform: uppercase; letter-spacing: 0.05em; }
+
+  /* FILTERS */
+  .filters-row { display: flex; align-items: center; gap: 8px; padding: 12px 0; flex-wrap: wrap; }
+  .filter-pill { background: var(--bg2); border: 1px solid var(--border); border-radius: 20px; padding: 5px 14px; font-size: 12px; color: var(--text2); cursor: pointer; transition: all 0.2s; }
+  .filter-pill:hover { border-color: var(--text3); color: var(--text); }
+  .filter-pill.active { background: var(--blue-bg); border-color: var(--blue); color: var(--blue); }
+  .search-input { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 5px 12px; font-size: 12px; color: var(--text); outline: none; margin-left: auto; width: 180px; }
+  .search-input:focus { border-color: var(--blue); }
+  .search-input::placeholder { color: var(--text3); }
+
+  /* ERROR BAR */
+  .err-bar { background: var(--red-bg); border: 1px solid var(--red); border-radius: var(--radius-sm); padding: 8px 14px; font-size: 12px; color: var(--red); margin-bottom: 10px; display: none; }
+
+  /* TABLE */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+  table { width: 100%; border-collapse: collapse; min-width: 720px; }
+  thead { background: var(--bg2); }
+  th { padding: 10px 12px; font-size: 11px; font-weight: 500; color: var(--text3); text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; text-transform: uppercase; letter-spacing: 0.04em; }
+  th.r { text-align: right; }
+  td { padding: 12px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr { transition: background 0.15s; }
+  tbody tr:hover td { background: var(--bg2); }
+
+  /* TIME COL */
+  .time-main { font-size: 13px; font-weight: 500; color: var(--text); }
+  .time-date { font-size: 11px; color: var(--text3); margin-top: 1px; }
+  .countdown { font-size: 11px; color: var(--blue); margin-top: 2px; }
+  .countdown.soon { color: var(--amber); font-weight: 600; }
+  .countdown.verysoon { color: var(--red); font-weight: 600; animation: blink 0.8s infinite; }
+  .live-badge { display: inline-flex; align-items: center; gap: 4px; background: var(--red-bg); border: 1px solid var(--red); border-radius: 4px; padding: 3px 8px; font-size: 11px; color: var(--red); font-weight: 600; }
+  .live-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--red); animation: blink 1.2s infinite; }
+
+  /* MATCH COL */
+  .match-teams { display: flex; align-items: center; gap: 6px; }
+  .team { font-size: 13px; font-weight: 600; color: var(--text); }
+  .team.fav { color: var(--green); }
+  .vs { font-size: 11px; color: var(--text3); }
+  .match-format { font-size: 10px; color: var(--text3); margin-top: 3px; }
+
+  /* EVENT BADGE */
+  .ev-badge { display: inline-block; font-size: 10px; padding: 2px 8px; border-radius: 3px; border-left: 2px solid; white-space: nowrap; }
+  .ev-blast { background: var(--blue-bg); color: var(--blue); border-color: var(--blue); }
+  .ev-esl { background: var(--green-bg); color: var(--green); border-color: var(--green); }
+  .ev-other { background: var(--bg3); color: var(--text2); border-color: var(--text3); }
+
+  /* ODDS */
+  .odds-wrap { display: flex; flex-direction: column; gap: 4px; }
+  .odds-row { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
+  .odds-name { font-size: 11px; color: var(--text2); min-width: 65px; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .odds-bar-bg { width: 65px; height: 5px; background: var(--bg3); border-radius: 3px; overflow: hidden; }
+  .odds-bar-fill { height: 100%; border-radius: 3px; transition: width 0.8s ease; }
+  .odds-val { font-size: 12px; font-weight: 600; min-width: 30px; text-align: right; }
+  .odds-val.fav { color: var(--green); }
+  .odds-val.und { color: var(--text3); }
+
+  /* VOLUME */
+  .vol-main { font-size: 13px; font-weight: 500; color: var(--text); text-align: right; }
+  .vol-sub { font-size: 10px; color: var(--text3); text-align: right; }
+
+  /* BELL */
+  .bell { font-size: 16px; cursor: pointer; opacity: 0.3; transition: opacity 0.2s, transform 0.15s; display: block; text-align: center; }
+  .bell:hover { opacity: 0.7; transform: scale(1.15); }
+  .bell.on { opacity: 1; }
+
+  /* BET LINK */
+  .bet-link { display: inline-block; font-size: 11px; color: var(--blue); text-decoration: none; padding: 4px 10px; border: 1px solid var(--blue); border-radius: var(--radius-sm); transition: all 0.2s; white-space: nowrap; }
+  .bet-link:hover { background: var(--blue-bg); }
+
+  /* FOOTER */
+  .footer-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; margin-top: 4px; }
+  .updated-txt { font-size: 11px; color: var(--text3); }
+  .refresh-btn { background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px 12px; font-size: 11px; color: var(--text2); cursor: pointer; transition: all 0.2s; }
+  .refresh-btn:hover { border-color: var(--blue); color: var(--blue); }
+
+  /* EMPTY */
+  .empty-row td { text-align: center; padding: 3rem; color: var(--text3); font-size: 13px; }
+
+  /* TOAST */
+  #toast { position: fixed; bottom: 20px; right: 20px; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 16px; font-size: 13px; color: var(--text); z-index: 999; max-width: 280px; transform: translateY(80px); opacity: 0; transition: all 0.3s; pointer-events: none; }
+  #toast.show { transform: translateY(0); opacity: 1; }
+  .toast-title { font-weight: 600; margin-bottom: 3px; font-size: 12px; }
+  .toast-body { color: var(--text2); font-size: 11px; }
+
+  @media (max-width: 600px) {
+    .stats-bar { gap: 8px; }
+    .stat-card { min-width: 90px; padding: 8px 12px; }
+    .search-input { width: 100%; margin-left: 0; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="container">
+    <div class="header-inner">
+      <div class="logo-area">
+        <div class="logo-box">
+          <svg viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="9" stroke="#4a9eff" stroke-width="1.5" fill="none" opacity="0.4"/>
+            <path d="M7 12l4 4 6-7" stroke="#4a9eff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div>
+          <div class="logo-title">CS2 · Polymarket</div>
+          <div class="logo-sub">Ставки на киберспорт в реальном времени</div>
+        </div>
+      </div>
+      <div class="header-right">
+        <div class="status-pill">
+          <span class="status-dot loading" id="statusDot"></span>
+          <span id="statusText">Загрузка...</span>
+        </div>
+        <button class="notif-btn" id="globalNotifBtn" onclick="toggleGlobal()">🔕 Алерты</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="container">
+
+  <div class="stats-bar">
+    <div class="stat-card">
+      <div class="stat-val" id="statTotal">—</div>
+      <div class="stat-label">Матчей</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-val" id="statLive">—</div>
+      <div class="stat-label">Live сейчас</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-val" id="statVolume">—</div>
+      <div class="stat-label">Общий объём</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-val" id="statAlerts">0</div>
+      <div class="stat-label">Алертов</div>
+    </div>
+  </div>
+
+  <div class="filters-row">
+    <button class="filter-pill active" onclick="setFilter('all', this)">Все</button>
+    <button class="filter-pill" onclick="setFilter('blast', this)">BLAST Rotterdam</button>
+    <button class="filter-pill" onclick="setFilter('esl', this)">ESL</button>
+    <button class="filter-pill" onclick="setFilter('live', this)">Live</button>
+    <button class="filter-pill" onclick="setFilter('upcoming', this)">Предстоящие</button>
+    <input class="search-input" type="text" placeholder="Поиск команды..." id="searchInput" oninput="render()">
+  </div>
+
+  <div class="err-bar" id="errBar"></div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:88px">Время</th>
+          <th>Матч</th>
+          <th>Турнир</th>
+          <th class="r" style="width:160px">Шансы</th>
+          <th class="r" style="width:72px">Объём</th>
+          <th class="r" style="width:38px">🔔</th>
+          <th class="r" style="width:80px">Ставить</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+  <div class="footer-row">
+    <div class="updated-txt" id="updatedTxt">—</div>
+    <button class="refresh-btn" onclick="fetchData()">↻ Обновить</button>
+  </div>
+
+</div>
+
+<div id="toast">
+  <div class="toast-title" id="toastTitle"></div>
+  <div class="toast-body" id="toastBody"></div>
+</div>
+
+<script>
+let markets = [];
+let activeFilter = 'all';
+let globalNotif = false;
+const notifs = {};
+const alerted = new Set();
+
+// ─── FETCH ───────────────────────────────────────────────
+async function fetchData() {
+  setStatus('loading', 'Загрузка...');
+  try {
+    // /api/proxy — serverless функция на Vercel, проксирует к Polymarket без CORS
+    const res = await fetch('/api/proxy?tag=cs2&limit=50');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const parsed = parseEvents(data);
+    if (parsed.length > 0) {
+      markets = parsed;
+      hideErr();
+    } else {
+      throw new Error('0 матчей в ответе');
+    }
+    setStatus('ok', 'Live · Polymarket API');
+    document.getElementById('updatedTxt').textContent =
+      'Обновлено: ' + new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  } catch (e) {
+    setStatus('error', 'Ошибка API');
+    showErr('Не удалось загрузить данные: ' + e.message + '. Показываем демо-данные.');
+    if (markets.length === 0) markets = demoData();
+  }
+  updateStats();
+  render();
+}
+
+function parseEvents(events) {
+  const list = Array.isArray(events) ? events : [];
+  return list.map(ev => {
+    if (!ev) return null;
+    const title = ev.title || ev.question || '';
+    const slug = ev.slug || '';
+    const mlist = Array.isArray(ev.markets) ? ev.markets : [];
+    let t1odds = 0.5, t2odds = 0.5, volume = 0, polyUrl = '', conditionId = '';
+    for (const m of mlist) {
+      try {
+        const op = JSON.parse(m.outcomePrices || '[]');
+        if (op.length >= 2) { t1odds = +op[0] || 0.5; t2odds = +op[1] || 0.5; }
+      } catch {}
+      volume += parseFloat(m.volume || 0);
+      if (!polyUrl && m.slug) polyUrl = `https://polymarket.com/event/${m.slug}`;
+      if (m.conditionId) conditionId = m.conditionId;
+    }
+    if (!polyUrl) polyUrl = `https://polymarket.com/event/${slug}`;
+    const teams = extractTeams(title, slug);
+    const startDate = ev.startDate ? new Date(ev.startDate) : null;
+    const isLive = !!(ev.active && startDate && startDate < new Date());
+    const eventName = guessEvent(slug + ' ' + title);
+    return {
+      id: ev.id || slug,
+      team1: teams[0], team2: teams[1],
+      t1odds, t2odds, volume,
+      event: guessEventType(eventName),
+      eventName, startDate, live: isLive,
+      polyUrl
+    };
+  }).filter(Boolean);
+}
+
+function extractTeams(title, slug) {
+  const m = title.match(/^(.+?)\s+vs\.?\s+(.+?)(?:\s*[\|\-\(]|$)/i);
+  if (m) return [m[1].trim(), m[2].trim()];
+  const p = slug.replace(/-will-win.*$/, '').split('-vs-');
+  if (p.length === 2) return [cap(p[0]), cap(p[1])];
+  return ['Team A', 'Team B'];
+}
+
+function cap(s) { return s.replace(/-/g,' ').replace(/\b\w/g, c => c.toUpperCase()); }
+
+function guessEvent(str) {
+  if (/blast/i.test(str)) return 'BLAST Rotterdam';
+  if (/esl/i.test(str)) return 'ESL Pro League';
+  if (/major/i.test(str)) return 'CS2 Major';
+  if (/pgl/i.test(str)) return 'PGL';
+  if (/iem/i.test(str)) return 'IEM';
+  return 'CS2 Match';
+}
+
+function guessEventType(name) {
+  if (/blast/i.test(name)) return 'blast';
+  if (/esl/i.test(name)) return 'esl';
+  return 'other';
+}
+
+// ─── RENDER ──────────────────────────────────────────────
+function getFiltered() {
+  const q = (document.getElementById('searchInput').value || '').toLowerCase().trim();
+  return markets.filter(m => {
+    if (activeFilter === 'blast' && m.event !== 'blast') return false;
+    if (activeFilter === 'esl' && m.event !== 'esl') return false;
+    if (activeFilter === 'live' && !m.live) return false;
+    if (activeFilter === 'upcoming' && m.live) return false;
+    if (q && !m.team1.toLowerCase().includes(q) && !m.team2.toLowerCase().includes(q)) return false;
+    return true;
+  });
+}
+
+function render() {
+  const list = getFiltered();
+  const tbody = document.getElementById('tbody');
+  if (!list.length) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="7">Матчи не найдены</td></tr>';
+    return;
+  }
+  const now = new Date();
+  tbody.innerHTML = list.map(m => {
+    const p1 = Math.round(m.t1odds * 100);
+    const p2 = Math.round(m.t2odds * 100);
+    const fav1 = m.t1odds >= m.t2odds;
+    const c1 = fav1 ? '#4caf7d' : '#555970';
+    const c2 = !fav1 ? '#4caf7d' : '#555970';
+    const ec = m.event === 'blast' ? 'ev-blast' : m.event === 'esl' ? 'ev-esl' : 'ev-other';
+    const on = !!notifs[m.id];
+    let timeHtml = '';
+    if (m.live) {
+      timeHtml = `<span class="live-badge"><span class="live-dot"></span>LIVE</span>`;
+    } else {
+      const cd = m.startDate ? countdown(m.startDate) : null;
+      const diff = m.startDate ? (m.startDate - now) : null;
+      const cdClass = diff && diff < 5*60000 ? 'countdown verysoon' : diff && diff < 15*60000 ? 'countdown soon' : 'countdown';
+      timeHtml = `
+        <div class="time-main">${m.startDate ? fmtTime(m.startDate) : '—'}</div>
+        <div class="time-date">${m.startDate ? fmtDate(m.startDate) : ''}</div>
+        ${cd ? `<div class="${cdClass}">${cd}</div>` : ''}
+      `;
+    }
+    return `<tr>
+      <td>${timeHtml}</td>
+      <td>
+        <div class="match-teams">
+          <span class="team ${fav1?'fav':''}">${esc(m.team1)}</span>
+          <span class="vs">vs</span>
+          <span class="team ${!fav1?'fav':''}">${esc(m.team2)}</span>
+        </div>
+        <div class="match-format">BO3</div>
+      </td>
+      <td><span class="ev-badge ${ec}">${esc(m.eventName)}</span></td>
+      <td>
+        <div class="odds-wrap">
+          <div class="odds-row">
+            <span class="odds-name">${esc(m.team1)}</span>
+            <div class="odds-bar-bg"><div class="odds-bar-fill" style="width:${p1}%;background:${c1}"></div></div>
+            <span class="odds-val ${fav1?'fav':'und'}">${p1}¢</span>
+          </div>
+          <div class="odds-row">
+            <span class="odds-name">${esc(m.team2)}</span>
+            <div class="odds-bar-bg"><div class="odds-bar-fill" style="width:${p2}%;background:${c2}"></div></div>
+            <span class="odds-val ${!fav1?'fav':'und'}">${p2}¢</span>
+          </div>
+        </div>
+      </td>
+      <td>
+        <div class="vol-main">${fmtVol(m.volume)}</div>
+        <div class="vol-sub">объём</div>
+      </td>
+      <td><span class="bell ${on?'on':''}" onclick="toggleNotif('${m.id}','${esc(m.team1)}','${esc(m.team2)}')">${on?'🔔':'🔕'}</span></td>
+      <td style="text-align:right"><a class="bet-link" href="${m.polyUrl}" target="_blank" rel="noopener">Ставить ↗</a></td>
+    </tr>`;
+  }).join('');
+}
+
+function updateStats() {
+  const live = markets.filter(m => m.live).length;
+  const vol = markets.reduce((s, m) => s + m.volume, 0);
+  const alerts = Object.values(notifs).filter(Boolean).length;
+  document.getElementById('statTotal').textContent = markets.length;
+  document.getElementById('statLive').textContent = live;
+  document.getElementById('statVolume').textContent = fmtVol(vol);
+  document.getElementById('statAlerts').textContent = alerts;
+}
+
+// ─── FILTERS ─────────────────────────────────────────────
+function setFilter(f, btn) {
+  activeFilter = f;
+  document.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  render();
+}
+
+// ─── NOTIFICATIONS ───────────────────────────────────────
+function toggleNotif(id, t1, t2) {
+  notifs[id] = !notifs[id];
+  if (notifs[id]) showToast('🔔 Алерт включён', `${t1} vs ${t2} — уведомим за 5 мин`);
+  else showToast('🔕 Алерт снят', `${t1} vs ${t2}`);
+  updateStats();
+  render();
+}
+
+function toggleGlobal() {
+  globalNotif = !globalNotif;
+  markets.forEach(m => { notifs[m.id] = globalNotif; });
+  const btn = document.getElementById('globalNotifBtn');
+  if (globalNotif) {
+    btn.textContent = '🔔 Алерты вкл.';
+    btn.classList.add('on');
+    showToast('🔔 Все алерты включены', 'Уведомим за 5 мин до каждого матча');
+  } else {
+    btn.textContent = '🔕 Алерты';
+    btn.classList.remove('on');
+  }
+  updateStats();
+  render();
+}
+
+function checkAlerts() {
+  const now = new Date();
+  markets.forEach(m => {
+    if (!notifs[m.id] || m.live || alerted.has(m.id) || !m.startDate) return;
+    const diff = m.startDate - now;
+    if (diff > 0 && diff <= 5 * 60000) {
+      alerted.add(m.id);
+      const mins = Math.ceil(diff / 60000);
+      showToast(`⚠️ ${m.team1} vs ${m.team2}`, `Матч начнётся через ${mins} мин · ${m.eventName}`);
+      if ('Notification' in window && Notification.permission === 'granted') {
+        new Notification('CS2 · Polymarket', { body: `${m.team1} vs ${m.team2} через ${mins} мин!` });
+      }
+    }
+  });
+}
+
+// ─── HELPERS ─────────────────────────────────────────────
+function fmtTime(d) {
+  return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+}
+
+function fmtDate(d) {
+  const now = new Date(), tom = new Date(now);
+  tom.setDate(now.getDate() + 1);
+  if (d.toDateString() === now.toDateString()) return 'Сегодня';
+  if (d.toDateString() === tom.toDateString()) return 'Завтра';
+  return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
+}
+
+function countdown(d) {
+  const diff = d - new Date();
+  if (diff <= 0) return null;
+  const m = Math.floor(diff / 60000), h = Math.floor(m / 60), rm = m % 60;
+  if (h > 0) return `через ${h}ч ${rm}м`;
+  return `через ${m} мин`;
+}
+
+function fmtVol(v) {
+  if (v >= 1e6) return '$' + (v / 1e6).toFixed(1) + 'M';
+  if (v >= 1e3) return '$' + Math.round(v / 1e3) + 'K';
+  if (v === 0) return '—';
+  return '$' + Math.round(v);
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function setStatus(type, text) {
+  const dot = document.getElementById('statusDot');
+  dot.className = 'status-dot' + (type === 'ok' ? '' : type === 'loading' ? ' loading' : ' error');
+  document.getElementById('statusText').textContent = text;
+}
+
+function showErr(msg) {
+  const b = document.getElementById('errBar');
+  b.textContent = msg;
+  b.style.display = 'block';
+}
+
+function hideErr() {
+  document.getElementById('errBar').style.display = 'none';
+}
+
+function showToast(title, body) {
+  document.getElementById('toastTitle').textContent = title;
+  document.getElementById('toastBody').textContent = body;
+  const t = document.getElementById('toast');
+  t.classList.add('show');
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.classList.remove('show'), 3500);
+}
+
+// ─── DEMO DATA ────────────────────────────────────────────
+function demoData() {
+  const b = new Date();
+  const ah = (h, m = 0) => new Date(b.getTime() + (h * 60 + m) * 60000);
+  return [
+    { id:'d1', live:true, team1:'Vitality', team2:'NAVI', t1odds:0.71, t2odds:0.29, volume:2100000, event:'blast', eventName:'BLAST Rotterdam', startDate:new Date(b-25*60000), polyUrl:'https://polymarket.com/predictions/cs2' },
+    { id:'d2', live:false, team1:'FaZe', team2:'The MongolZ', t1odds:0.44, t2odds:0.56, volume:1800000, event:'blast', eventName:'BLAST Rotterdam', startDate:ah(0,4), polyUrl:'https://polymarket.com/predictions/cs2' },
+    { id:'d3', live:false, team1:'G2 Esports', team2:'Heroic', t1odds:0.67, t2odds:0.33, volume:940000, event:'blast', eventName:'BLAST Rotterdam', startDate:ah(2,30), polyUrl:'https://polymarket.com/predictions/cs2' },
+    { id:'d4', live:false, team1:'Spirit', team2:'MOUZ', t1odds:0.58, t2odds:0.42, volume:670000, event:'blast', eventName:'BLAST Rotterdam', startDate:ah(5), polyUrl:'https://polymarket.com/predictions/cs2' },
+    { id:'d5', live:false, team1:'Cloud9', team2:'B8', t1odds:0.61, t2odds:0.39, volume:410000, event:'blast', eventName:'BLAST Rotterdam', startDate:ah(7,30), polyUrl:'https://polymarket.com/predictions/cs2' },
+    { id:'d6', live:false, team1:'NRG', team2:'TYLOO', t1odds:0.82, t2odds:0.18, volume:280000, event:'esl', eventName:'ESL Pro League', startDate:ah(10), polyUrl:'https://polymarket.com/predictions/cs2' },
+  ];
+}
+
+// ─── INIT ─────────────────────────────────────────────────
+fetchData();
+setInterval(fetchData, 30000);
+setInterval(checkAlerts, 15000);
+setInterval(() => render(), 60000); // обновлять таймеры
+</script>
+</body>
+</html>
