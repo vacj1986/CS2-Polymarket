@@ -235,220 +235,217 @@
 </div>
 
 <script>
-let markets = [];
+let allMatches = [];   // все матчи с бэка
 let activeFilter = 'all';
+let showPast = false;
 let globalNotif = false;
 const notifs = {};
 const alerted = new Set();
 
 // ─── FETCH ───────────────────────────────────────────────
-// /api/proxy тянет /markets?tag_id=100780 — CS2 game-маркеты
-// каждый объект = один матч с полями: outcomes, outcomePrices, gameStartTime, teamAID, teamBID
 async function fetchData() {
   setStatus('loading', 'Загрузка...');
   try {
     const res = await fetch('/api/proxy?limit=100');
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const json = await res.json();
-    // Прокси возвращает {source, data} или просто массив (fallback)
     const raw = Array.isArray(json) ? json : (json.data || []);
-    const src = json.source || 'unknown';
-    if (!Array.isArray(raw)) throw new Error('Неверный формат ответа');
-    const parsed = parseMarkets(raw);
-    if (parsed.length > 0) { markets = parsed; hideErr(); }
-    else throw new Error('0 матчей (source: ' + src + ')');
-    setStatus('ok', 'Live · Polymarket (' + src + ')');
+    if (!Array.isArray(raw)) throw new Error('Bad response format');
+    if (raw.length > 0) { allMatches = raw; hideErr(); }
+    else throw new Error('0 matches from API');
+    setStatus('ok', 'Live · Polymarket');
     document.getElementById('updatedTxt').textContent =
       'Обновлено: ' + new Date().toLocaleTimeString('ru-RU', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
   } catch (e) {
     setStatus('error', 'Ошибка API');
-    showErr('Ошибка загрузки: ' + e.message + '. Показываем демо-данные.');
-    if (markets.length === 0) markets = demoData();
+    showErr('Ошибка: ' + e.message + '. Демо-данные.');
+    if (allMatches.length === 0) allMatches = demoData();
   }
   updateStats();
   render();
 }
 
-// ─── PARSE /markets ───────────────────────────────────────
-// Структура game-маркета из Polymarket /markets:
-//   outcomes      = '["Team A","Team B"]'   — имена команд
-//   outcomePrices = '["0.65","0.35"]'        — шансы
-//   gameStartTime = "2026-03-21T17:00:00Z"  — старт матча
-//   volume        = "12345.67"
-//   slug          = "faze-vs-team-spirit-..."
-//   events[0].title — название турнира
-function parseMarkets(data) {
-  const result = [];
-  for (const m of data) {
-    const outcomes = tryJson(m.outcomes, []);
-    const prices   = tryJson(m.outcomePrices, []);
+// ─── FILTER & SORT ───────────────────────────────────────
+function getVisible() {
+  const q = (document.getElementById('searchInput').value || '').toLowerCase().trim();
+  const now = new Date();
 
-    // Имена команд — из outcomes (самый точный источник)
-    let team1 = cleanTeam(outcomes[0] || '');
-    let team2 = cleanTeam(outcomes[1] || '');
+  // Разбиваем на 3 группы
+  let live     = [];
+  let upcoming = [];
+  let past     = [];
 
-    // Если outcomes пустые — пробуем из question/title
-    if (!team1 && !team2) {
-      const title = m.question || m.eventTitle || '';
-      const match = title.match(/^(.+?)\s+vs\.?\s+(.+?)(?:\s*[\|\-\(]|$)/i);
-      if (match) { team1 = match[1].trim(); team2 = match[2].trim(); }
-    }
+  for (const m of allMatches) {
+    const sd = m.startDate ? new Date(m.startDate) : null;
+    const ed = m.endDate   ? new Date(m.endDate)   : null;
 
-    // Пропускаем маркеты без команд (futures типа "Will X win a tier-1...")
-    if (!team1 || !team2) continue;
+    // Пересчитываем live/past на клиенте (данные могли устареть)
+    const isPast = m.past || !!(ed && ed < now) || !!(sd && sd < now && !m.live && !m.upcoming);
+    const isLive = !isPast && !!(m.live || (sd && sd < now && !(ed && ed < now)));
+    const isUpcoming = !isPast && !isLive;
 
-    const t1odds = parseFloat(prices[0]) || 0.5;
-    const t2odds = parseFloat(prices[1]) || 0.5;
-    const volume = parseFloat(m.volume || m.volumeNum || 0);
+    // Фильтр поиска
+    if (q && !m.team1.toLowerCase().includes(q) && !m.team2.toLowerCase().includes(q)) continue;
+    // Фильтр турнира
+    if (activeFilter === 'blast' && !/blast/i.test(m.eventTitle)) continue;
+    if (activeFilter === 'esl'   && !/esl/i.test(m.eventTitle))   continue;
 
-    // Время: gameStartTime — точное время начала матча
-    const gameTime  = m.gameStartTime || m.startDate || m.endDate || null;
-    const startDate = gameTime ? new Date(gameTime) : null;
-    const isLive    = !!(m.active && startDate && startDate < new Date() && !m.closed);
-
-    // Турнир — из eventTitle (прокси передаёт его) или из slug/question
-    const srcStr  = (m.eventTitle || '') + ' ' + (m.eventSlug || '') + ' ' + (m.question || '');
-    const eventName = guessEvent(srcStr);
-
-    const polyUrl = m.eventSlug
-      ? `https://polymarket.com/event/${m.eventSlug}`
-      : m.slug
-        ? `https://polymarket.com/event/${m.slug}`
-        : `https://polymarket.com/sports/counter-strike/games`;
-
-    result.push({
-      id: m.id || m.slug,
-      team1, team2,
-      t1odds, t2odds, volume,
-      event: guessEventType(eventName),
-      eventName, startDate, live: isLive,
-      polyUrl,
-      format: m.formatType || 'BO3'
-    });
+    const obj = { ...m, _live: isLive, _past: isPast, _upcoming: isUpcoming };
+    if (isLive)     live.push(obj);
+    else if (isPast) past.push(obj);
+    else             upcoming.push(obj);
   }
-  return result;
-}
 
-function tryJson(str, def) {
-  try { return JSON.parse(str) || def; } catch { return def; }
-}
+  // Сортировка
+  // Live: по времени старта (раньше стартовал — сверху, т.е. "больше всего в игре")
+  live.sort((a,b) => new Date(a.startDate||0) - new Date(b.startDate||0));
+  // Upcoming: ближайшие сверху
+  upcoming.sort((a,b) => new Date(a.startDate||0) - new Date(b.startDate||0));
+  // Past: от вчерашнего к старым (новее = сверху)
+  past.sort((a,b) => new Date(b.startDate||0) - new Date(a.startDate||0));
 
-function cleanTeam(s) {
-  return String(s)
-    .replace(/\s+will win.*/i, '')
-    .replace(/\s+to win.*/i, '')
-    .trim();
-}
+  // Какие показывать
+  if (activeFilter === 'live')     return { groups: [{ label: null, items: live }], pastCount: past.length };
+  if (activeFilter === 'upcoming') return { groups: [{ label: null, items: upcoming }], pastCount: past.length };
 
-function guessEvent(str) {
-  const s = str.toLowerCase();
-  if (/blast.*rotterdam/i.test(s)) return 'BLAST Rotterdam';
-  if (/blast/i.test(s))            return 'BLAST';
-  if (/esl.*challenger/i.test(s))  return 'ESL Challenger';
-  if (/esl.*pro/i.test(s))         return 'ESL Pro League';
-  if (/esl/i.test(s))              return 'ESL';
-  if (/cct/i.test(s))              return 'CCT';
-  if (/major/i.test(s))            return 'CS2 Major';
-  if (/pgl/i.test(s))              return 'PGL';
-  if (/iem/i.test(s))              return 'IEM';
-  return 'CS2 Match';
-}
+  const groups = [];
+  if (live.length)     groups.push({ label: 'Live сейчас',  live: true,  items: live });
+  if (upcoming.length) groups.push({ label: 'Предстоящие',  live: false, items: upcoming });
 
-function guessEventType(name) {
-  if (/blast/i.test(name)) return 'blast';
-  if (/esl/i.test(name))   return 'esl';
-  return 'other';
+  return { groups, past, pastCount: past.length };
 }
 
 // ─── RENDER ──────────────────────────────────────────────
-function getFiltered() {
-  const q = (document.getElementById('searchInput').value || '').toLowerCase().trim();
-  return markets.filter(m => {
-    if (activeFilter === 'blast'    && m.event !== 'blast') return false;
-    if (activeFilter === 'esl'      && m.event !== 'esl')   return false;
-    if (activeFilter === 'live'     && !m.live)             return false;
-    if (activeFilter === 'upcoming' && m.live)              return false;
-    if (q && !m.team1.toLowerCase().includes(q) && !m.team2.toLowerCase().includes(q)) return false;
-    return true;
-  });
+function render() {
+  const { groups, past, pastCount } = getVisible();
+  const tbody = document.getElementById('tbody');
+  const now = new Date();
+  let html = '';
+
+  for (const grp of groups) {
+    if (grp.label) {
+      html += `<tr><td colspan="7" style="padding:10px 12px 4px;font-size:11px;font-weight:600;
+        color:${grp.live ? 'var(--red)' : 'var(--text2)'};letter-spacing:0.06em;
+        text-transform:uppercase;background:var(--bg2);border-bottom:1px solid var(--border)">
+        ${grp.live ? '<span class="live-dot" style="display:inline-block;margin-right:5px"></span>' : ''}${grp.label}
+      </td></tr>`;
+    }
+    if (!grp.items.length) {
+      html += `<tr><td colspan="7" style="padding:1.5rem;text-align:center;color:var(--text3);font-size:13px">Нет матчей</td></tr>`;
+    }
+    for (const m of grp.items) {
+      html += renderRow(m, now);
+    }
+  }
+
+  // Кнопка "Прошедшие"
+  html += `<tr id="pastToggleRow"><td colspan="7" style="padding:0;border-top:1px solid var(--border)">
+    <button onclick="togglePast()" style="width:100%;background:var(--bg2);border:none;
+      padding:10px 16px;font-size:12px;color:var(--text2);cursor:pointer;text-align:left;
+      display:flex;align-items:center;gap:8px">
+      <span style="font-size:14px">${showPast ? '▲' : '▼'}</span>
+      Прошедшие матчи (${pastCount})
+    </button>
+  </td></tr>`;
+
+  if (showPast && past && past.length) {
+    // Группируем прошлые по дате
+    const byDate = {};
+    for (const m of past) {
+      const d = m.startDate ? new Date(m.startDate).toLocaleDateString('ru-RU', {day:'numeric',month:'long'}) : 'Неизвестно';
+      if (!byDate[d]) byDate[d] = [];
+      byDate[d].push(m);
+    }
+    for (const [date, items] of Object.entries(byDate)) {
+      html += `<tr><td colspan="7" style="padding:6px 12px 2px;font-size:11px;color:var(--text3);
+        background:var(--bg);border-bottom:1px solid var(--border);letter-spacing:0.04em">${date}</td></tr>`;
+      for (const m of items) html += renderRow(m, now, true);
+    }
+  }
+
+  if (!html) {
+    html = '<tr><td colspan="7" style="text-align:center;padding:3rem;color:var(--text3);font-size:13px">Матчи не найдены</td></tr>';
+  }
+
+  tbody.innerHTML = html;
 }
 
-function render() {
-  const list = getFiltered();
-  const tbody = document.getElementById('tbody');
-  if (!list.length) {
-    tbody.innerHTML = '<tr class="empty-row"><td colspan="7">Матчи не найдены</td></tr>';
-    return;
+function renderRow(m, now, isPastRow = false) {
+  const sd   = m.startDate ? new Date(m.startDate) : null;
+  const p1   = Math.round(m.t1odds * 100);
+  const p2   = Math.round(m.t2odds * 100);
+  const fav1 = m.t1odds >= m.t2odds;
+  const c1   = fav1  ? '#4caf7d' : '#555970';
+  const c2   = !fav1 ? '#4caf7d' : '#555970';
+  const ec   = /blast/i.test(m.eventTitle) ? 'ev-blast' : /esl/i.test(m.eventTitle) ? 'ev-esl' : 'ev-other';
+  const on   = !!notifs[m.id];
+  const rowOpacity = isPastRow ? 'opacity:0.55;' : '';
+
+  let timeHtml = '';
+  if (m._live || m.live) {
+    timeHtml = `<span class="live-badge"><span class="live-dot"></span>LIVE</span>`;
+  } else if (isPastRow || m._past) {
+    timeHtml = `<div class="time-main">${sd ? fmtTime(sd) : '—'}</div>
+                <div class="time-date" style="color:var(--text3)">${sd ? fmtDate(sd) : ''}</div>`;
+  } else {
+    const cd   = sd ? countdown(sd) : null;
+    const diff = sd ? (sd - now) : null;
+    const cdClass = diff && diff < 5*60000 ? 'countdown verysoon'
+                  : diff && diff < 15*60000 ? 'countdown soon' : 'countdown';
+    timeHtml = `<div class="time-main">${sd ? fmtTime(sd) : '—'}</div>
+                <div class="time-date">${sd ? fmtDate(sd) : ''}</div>
+                ${cd ? `<div class="${cdClass}">${cd}</div>` : ''}`;
   }
-  const now = new Date();
-  tbody.innerHTML = list.map(m => {
-    const p1   = Math.round(m.t1odds * 100);
-    const p2   = Math.round(m.t2odds * 100);
-    const fav1 = m.t1odds >= m.t2odds;
-    const c1   = fav1  ? '#4caf7d' : '#555970';
-    const c2   = !fav1 ? '#4caf7d' : '#555970';
-    const ec   = m.event === 'blast' ? 'ev-blast' : m.event === 'esl' ? 'ev-esl' : 'ev-other';
-    const on   = !!notifs[m.id];
 
-    let timeHtml = '';
-    if (m.live) {
-      timeHtml = `<span class="live-badge"><span class="live-dot"></span>LIVE</span>`;
-    } else {
-      const cd   = m.startDate ? countdown(m.startDate) : null;
-      const diff = m.startDate ? (m.startDate - now) : null;
-      const cdClass = diff && diff < 5*60000 ? 'countdown verysoon'
-                    : diff && diff < 15*60000 ? 'countdown soon'
-                    : 'countdown';
-      timeHtml = `
-        <div class="time-main">${m.startDate ? fmtTime(m.startDate) : '—'}</div>
-        <div class="time-date">${m.startDate ? fmtDate(m.startDate) : ''}</div>
-        ${cd ? `<div class="${cdClass}">${cd}</div>` : ''}
-      `;
-    }
+  return `<tr style="${rowOpacity}">
+    <td>${timeHtml}</td>
+    <td>
+      <div class="match-teams">
+        <span class="team ${fav1?'fav':''}">${esc(m.team1)}</span>
+        <span class="vs">vs</span>
+        <span class="team ${!fav1?'fav':''}">${esc(m.team2)}</span>
+      </div>
+      <div class="match-format">${esc(m.formatType || 'BO3')}</div>
+    </td>
+    <td><span class="ev-badge ${ec}">${esc(guessEventShort(m.eventTitle))}</span></td>
+    <td>
+      <div class="odds-wrap">
+        <div class="odds-row">
+          <span class="odds-name">${esc(m.team1)}</span>
+          <div class="odds-bar-bg"><div class="odds-bar-fill" style="width:${p1}%;background:${c1}"></div></div>
+          <span class="odds-val ${fav1?'fav':'und'}">${p1}¢</span>
+        </div>
+        <div class="odds-row">
+          <span class="odds-name">${esc(m.team2)}</span>
+          <div class="odds-bar-bg"><div class="odds-bar-fill" style="width:${p2}%;background:${c2}"></div></div>
+          <span class="odds-val ${!fav1?'fav':'und'}">${p2}¢</span>
+        </div>
+      </div>
+    </td>
+    <td>
+      <div class="vol-main">${fmtVol(m.volume)}</div>
+      <div class="vol-sub">объём</div>
+    </td>
+    <td>${isPastRow ? '' : `<span class="bell ${on?'on':''}" onclick="toggleNotif('${m.id}','${esc(m.team1)}','${esc(m.team2)}')">${on?'🔔':'🔕'}</span>`}</td>
+    <td style="text-align:right"><a class="bet-link" href="${m.polyUrl}" target="_blank" rel="noopener">↗</a></td>
+  </tr>`;
+}
 
-    return `<tr>
-      <td>${timeHtml}</td>
-      <td>
-        <div class="match-teams">
-          <span class="team ${fav1 ? 'fav' : ''}">${esc(m.team1)}</span>
-          <span class="vs">vs</span>
-          <span class="team ${!fav1 ? 'fav' : ''}">${esc(m.team2)}</span>
-        </div>
-        <div class="match-format">${esc(m.format)}</div>
-      </td>
-      <td><span class="ev-badge ${ec}">${esc(m.eventName)}</span></td>
-      <td>
-        <div class="odds-wrap">
-          <div class="odds-row">
-            <span class="odds-name">${esc(m.team1)}</span>
-            <div class="odds-bar-bg"><div class="odds-bar-fill" style="width:${p1}%;background:${c1}"></div></div>
-            <span class="odds-val ${fav1 ? 'fav' : 'und'}">${p1}¢</span>
-          </div>
-          <div class="odds-row">
-            <span class="odds-name">${esc(m.team2)}</span>
-            <div class="odds-bar-bg"><div class="odds-bar-fill" style="width:${p2}%;background:${c2}"></div></div>
-            <span class="odds-val ${!fav1 ? 'fav' : 'und'}">${p2}¢</span>
-          </div>
-        </div>
-      </td>
-      <td>
-        <div class="vol-main">${fmtVol(m.volume)}</div>
-        <div class="vol-sub">объём</div>
-      </td>
-      <td><span class="bell ${on ? 'on' : ''}" onclick="toggleNotif('${m.id}','${esc(m.team1)}','${esc(m.team2)}')">${on ? '🔔' : '🔕'}</span></td>
-      <td style="text-align:right"><a class="bet-link" href="${m.polyUrl}" target="_blank" rel="noopener">Ставить ↗</a></td>
-    </tr>`;
-  }).join('');
+function togglePast() {
+  showPast = !showPast;
+  render();
 }
 
 function updateStats() {
-  const live   = markets.filter(m => m.live).length;
-  const vol    = markets.reduce((s, m) => s + m.volume, 0);
-  const alerts = Object.values(notifs).filter(Boolean).length;
-  document.getElementById('statTotal').textContent  = markets.length;
-  document.getElementById('statLive').textContent   = live;
-  document.getElementById('statVolume').textContent = fmtVol(vol);
-  document.getElementById('statAlerts').textContent = alerts;
+  const now = new Date();
+  const live     = allMatches.filter(m => m.live || (m.startDate && new Date(m.startDate) < now && !m.past)).length;
+  const upcoming = allMatches.filter(m => m.upcoming).length;
+  const vol      = allMatches.reduce((s,m) => s + (m.volume||0), 0);
+  const alerts   = Object.values(notifs).filter(Boolean).length;
+  document.getElementById('statTotal').textContent   = allMatches.length;
+  document.getElementById('statLive').textContent    = live;
+  document.getElementById('statVolume').textContent  = fmtVol(vol);
+  document.getElementById('statAlerts').textContent  = alerts;
 }
 
 // ─── FILTERS ─────────────────────────────────────────────
@@ -462,64 +459,75 @@ function setFilter(f, btn) {
 // ─── NOTIFICATIONS ───────────────────────────────────────
 function toggleNotif(id, t1, t2) {
   notifs[id] = !notifs[id];
-  if (notifs[id]) showToast('🔔 Алерт включён', `${t1} vs ${t2} — уведомим за 5 мин`);
+  if (notifs[id]) showToast('🔔 Алерт включён', `${t1} vs ${t2} — за 5 мин до старта`);
   else            showToast('🔕 Алерт снят',    `${t1} vs ${t2}`);
   updateStats(); render();
 }
 
 function toggleGlobal() {
   globalNotif = !globalNotif;
-  markets.forEach(m => { notifs[m.id] = globalNotif; });
+  allMatches.forEach(m => { notifs[m.id] = globalNotif; });
   const btn = document.getElementById('globalNotifBtn');
-  if (globalNotif) {
-    btn.textContent = '🔔 Алерты вкл.'; btn.classList.add('on');
-    showToast('🔔 Все алерты включены', 'Уведомим за 5 мин до каждого матча');
-  } else {
-    btn.textContent = '🔕 Алерты'; btn.classList.remove('on');
-  }
+  if (globalNotif) { btn.textContent='🔔 Алерты вкл.'; btn.classList.add('on'); showToast('🔔 Все алерты','За 5 мин до каждого матча'); }
+  else             { btn.textContent='🔕 Алерты';      btn.classList.remove('on'); }
   updateStats(); render();
 }
 
 function checkAlerts() {
   const now = new Date();
-  markets.forEach(m => {
-    if (!notifs[m.id] || m.live || alerted.has(m.id) || !m.startDate) return;
-    const diff = m.startDate - now;
-    if (diff > 0 && diff <= 5 * 60000) {
+  allMatches.forEach(m => {
+    if (!notifs[m.id] || m.live || m.past || alerted.has(m.id) || !m.startDate) return;
+    const diff = new Date(m.startDate) - now;
+    if (diff > 0 && diff <= 5*60000) {
       alerted.add(m.id);
-      const mins = Math.ceil(diff / 60000);
-      showToast(`⚠️ ${m.team1} vs ${m.team2}`, `Матч через ${mins} мин · ${m.eventName}`);
-      if ('Notification' in window && Notification.permission === 'granted') {
-        new Notification('CS2 · Polymarket', { body: `${m.team1} vs ${m.team2} через ${mins} мин!` });
-      }
+      const mins = Math.ceil(diff/60000);
+      showToast(`⚠️ ${m.team1} vs ${m.team2}`, `Через ${mins} мин · ${guessEventShort(m.eventTitle)}`);
+      if ('Notification' in window && Notification.permission==='granted')
+        new Notification('CS2 · Polymarket', {body:`${m.team1} vs ${m.team2} через ${mins} мин!`});
     }
   });
 }
 
 // ─── HELPERS ─────────────────────────────────────────────
-function fmtTime(d) { return d.toLocaleTimeString('ru-RU', {hour:'2-digit',minute:'2-digit'}); }
+function fmtTime(d) { return d.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}); }
 
 function fmtDate(d) {
   const now = new Date(), tom = new Date(now);
-  tom.setDate(now.getDate() + 1);
-  if (d.toDateString() === now.toDateString()) return 'Сегодня';
-  if (d.toDateString() === tom.toDateString()) return 'Завтра';
-  return d.toLocaleDateString('ru-RU', {day:'numeric', month:'short'});
+  tom.setDate(now.getDate()+1);
+  const yest = new Date(now); yest.setDate(now.getDate()-1);
+  if (d.toDateString()===now.toDateString())  return 'Сегодня';
+  if (d.toDateString()===tom.toDateString())  return 'Завтра';
+  if (d.toDateString()===yest.toDateString()) return 'Вчера';
+  return d.toLocaleDateString('ru-RU',{day:'numeric',month:'short'});
 }
 
 function countdown(d) {
   const diff = d - new Date();
   if (diff <= 0) return null;
-  const m = Math.floor(diff / 60000), h = Math.floor(m / 60), rm = m % 60;
-  if (h > 0) return `через ${h}ч ${rm}м`;
-  return `через ${m} мин`;
+  const m=Math.floor(diff/60000), h=Math.floor(m/60), rm=m%60;
+  return h>0 ? `через ${h}ч ${rm}м` : `через ${m} мин`;
 }
 
 function fmtVol(v) {
-  if (v >= 1e6) return '$' + (v/1e6).toFixed(1) + 'M';
-  if (v >= 1e3) return '$' + Math.round(v/1e3) + 'K';
-  if (v === 0)  return '—';
-  return '$' + Math.round(v);
+  v = v||0;
+  if (v>=1e6) return '$'+(v/1e6).toFixed(1)+'M';
+  if (v>=1e3) return '$'+Math.round(v/1e3)+'K';
+  if (v===0)  return '—';
+  return '$'+Math.round(v);
+}
+
+function guessEventShort(title) {
+  if (!title) return 'CS2 Match';
+  if (/blast.*rotterdam/i.test(title)) return 'BLAST Rotterdam';
+  if (/blast/i.test(title))            return 'BLAST';
+  if (/esl.*challenger/i.test(title))  return 'ESL Challenger';
+  if (/esl.*pro/i.test(title))         return 'ESL Pro League';
+  if (/esl/i.test(title))              return 'ESL';
+  if (/cct/i.test(title))              return 'CCT';
+  if (/pgl.*major/i.test(title))       return 'PGL Major';
+  if (/major/i.test(title))            return 'CS2 Major';
+  if (/iem/i.test(title))              return 'IEM';
+  return title.length > 24 ? title.slice(0,22)+'…' : title;
 }
 
 function esc(s) {
@@ -528,15 +536,11 @@ function esc(s) {
 
 function setStatus(type, text) {
   const dot = document.getElementById('statusDot');
-  dot.className = 'status-dot' + (type==='ok' ? '' : type==='loading' ? ' loading' : ' error');
+  dot.className = 'status-dot'+(type==='ok'?'':type==='loading'?' loading':' error');
   document.getElementById('statusText').textContent = text;
 }
-
-function showErr(msg) {
-  const b = document.getElementById('errBar');
-  b.textContent = msg; b.style.display = 'block';
-}
-function hideErr() { document.getElementById('errBar').style.display = 'none'; }
+function showErr(msg) { const b=document.getElementById('errBar'); b.textContent=msg; b.style.display='block'; }
+function hideErr()    { document.getElementById('errBar').style.display='none'; }
 
 function showToast(title, body) {
   document.getElementById('toastTitle').textContent = title;
@@ -544,20 +548,21 @@ function showToast(title, body) {
   const t = document.getElementById('toast');
   t.classList.add('show');
   clearTimeout(t._timer);
-  t._timer = setTimeout(() => t.classList.remove('show'), 3500);
+  t._timer = setTimeout(()=>t.classList.remove('show'), 3500);
 }
 
-// ─── DEMO DATA ─────────────────────────────────────────────
+// ─── DEMO DATA ────────────────────────────────────────────
 function demoData() {
-  const b = new Date();
-  const ah = (h, m=0) => new Date(b.getTime() + (h*60+m)*60000);
+  const b = new Date(), ah=(h,m=0)=>new Date(b.getTime()+(h*60+m)*60000);
+  const past = d=>new Date(b.getTime()-d*60000);
   return [
-    {id:'d1', live:true,  team1:'Ex-Zero Tenacity', team2:'HAVU',          t1odds:0.01, t2odds:0.99, volume:79560,  event:'esl',   eventName:'ESL Challenger', startDate:new Date(b-25*60000), polyUrl:'https://polymarket.com/sports/counter-strike/games', format:'BO3'},
-    {id:'d2', live:true,  team1:'UNiTY Esports',    team2:'G2 Ares',       t1odds:0.54, t2odds:0.46, volume:20360,  event:'esl',   eventName:'ESL Challenger', startDate:new Date(b-10*60000), polyUrl:'https://polymarket.com/sports/counter-strike/games', format:'BO3'},
-    {id:'d3', live:false, team1:'Ex-Zero Tenacity', team2:'Supernova',     t1odds:0.51, t2odds:0.49, volume:362,    event:'other', eventName:'CCT',            startDate:ah(0,30),            polyUrl:'https://polymarket.com/sports/counter-strike/games', format:'BO3'},
-    {id:'d4', live:false, team1:'FURIA',            team2:'Aurora Gaming', t1odds:0.64, t2odds:0.36, volume:430610, event:'blast', eventName:'BLAST Rotterdam', startDate:ah(2),               polyUrl:'https://polymarket.com/sports/counter-strike/games', format:'BO3'},
-    {id:'d5', live:false, team1:'Crashers',         team2:'Back To Back',  t1odds:0.56, t2odds:0.44, volume:3350,   event:'other', eventName:'CCT',            startDate:ah(2),               polyUrl:'https://polymarket.com/sports/counter-strike/games', format:'BO3'},
-    {id:'d6', live:false, team1:'Vitality',         team2:'NAVI',          t1odds:0.71, t2odds:0.29, volume:2100000,event:'blast', eventName:'BLAST Rotterdam', startDate:ah(4),               polyUrl:'https://polymarket.com/sports/counter-strike/games', format:'BO3'},
+    {id:'d1',team1:'Ex-Zero Tenacity',team2:'HAVU',          t1odds:0.01,t2odds:0.99,volume:79560, live:true, past:false,upcoming:false,startDate:past(25).toISOString(),eventTitle:'ESL Challenger League Europe Cup',polyUrl:'https://polymarket.com/sports/counter-strike/games',formatType:'BO3'},
+    {id:'d2',team1:'UNiTY Esports',   team2:'G2 Ares',       t1odds:0.54,t2odds:0.46,volume:20360, live:true, past:false,upcoming:false,startDate:past(10).toISOString(),eventTitle:'ESL Challenger League Europe Cup',polyUrl:'https://polymarket.com/sports/counter-strike/games',formatType:'BO3'},
+    {id:'d3',team1:'FURIA',           team2:'Aurora Gaming', t1odds:0.64,t2odds:0.36,volume:430610,live:false,past:false,upcoming:true, startDate:ah(2).toISOString(),   eventTitle:'BLAST Open Rotterdam Group A',  polyUrl:'https://polymarket.com/sports/counter-strike/games',formatType:'BO3'},
+    {id:'d4',team1:'Crashers',        team2:'Back To Back',  t1odds:0.56,t2odds:0.44,volume:3350,  live:false,past:false,upcoming:true, startDate:ah(2).toISOString(),   eventTitle:'CCT South America Series',       polyUrl:'https://polymarket.com/sports/counter-strike/games',formatType:'BO3'},
+    {id:'d5',team1:'Vitality',        team2:'NAVI',          t1odds:0.71,t2odds:0.29,volume:2100000,live:false,past:false,upcoming:true,startDate:ah(5).toISOString(),   eventTitle:'BLAST Open Rotterdam Group B',  polyUrl:'https://polymarket.com/sports/counter-strike/games',formatType:'BO3'},
+    {id:'d6',team1:'ShindeN',         team2:'Guarà eSports', t1odds:0.80,t2odds:0.20,volume:856,   live:false,past:true, upcoming:false,startDate:past(60*24).toISOString(),eventTitle:'ESL Challenger League SA',     polyUrl:'https://polymarket.com/sports/counter-strike/games',formatType:'BO3'},
+    {id:'d7',team1:'UNO MILLE',       team2:'Keyd',          t1odds:0.31,t2odds:0.69,volume:4000,  live:false,past:true, upcoming:false,startDate:past(60*26).toISOString(),eventTitle:'ESL Challenger League SA',     polyUrl:'https://polymarket.com/sports/counter-strike/games',formatType:'BO3'},
   ];
 }
 
@@ -565,8 +570,8 @@ function demoData() {
 fetchData();
 setInterval(fetchData, 30000);
 setInterval(checkAlerts, 15000);
-setInterval(() => render(), 60000);
-
+setInterval(()=>render(), 60000);
 </script>
+>
 </body>
 </html>
