@@ -167,7 +167,7 @@
           <span class="status-dot loading" id="statusDot"></span>
           <span id="statusText">Загрузка...</span>
         </div>
-        <button class="notif-btn" id="globalNotifBtn" onclick="toggleGlobal()">🔕 Алерты</button>
+        <button class="notif-btn" id="globalNotifBtn" onclick="toggleUpcomingNotifs()">🔔 Уведомить о ближайших</button>
       </div>
     </div>
   </div>
@@ -196,10 +196,11 @@
 
   <div class="filters-row">
     <button class="filter-pill active" onclick="setFilter('all', this)">Все</button>
-    <button class="filter-pill" onclick="setFilter('blast', this)">BLAST Rotterdam</button>
+    <button class="filter-pill" onclick="setFilter('blast', this)">BLAST</button>
     <button class="filter-pill" onclick="setFilter('esl', this)">ESL</button>
     <button class="filter-pill" onclick="setFilter('live', this)">Live</button>
     <button class="filter-pill" onclick="setFilter('upcoming', this)">Предстоящие</button>
+    <button class="filter-pill" id="pastBtn" onclick="openPastModal()">Прошедшие ▾</button>
     <input class="search-input" type="text" placeholder="Поиск команды..." id="searchInput" oninput="render()">
   </div>
 
@@ -338,30 +339,9 @@ function render() {
     }
   }
 
-  // Кнопка "Прошедшие"
-  html += `<tr id="pastToggleRow"><td colspan="7" style="padding:0;border-top:1px solid var(--border)">
-    <button onclick="togglePast()" style="width:100%;background:var(--bg2);border:none;
-      padding:10px 16px;font-size:12px;color:var(--text2);cursor:pointer;text-align:left;
-      display:flex;align-items:center;gap:8px">
-      <span style="font-size:14px">${showPast ? '▲' : '▼'}</span>
-      Прошедшие матчи (${pastCount})
-    </button>
-  </td></tr>`;
-
-  if (showPast && past && past.length) {
-    // Группируем прошлые по дате
-    const byDate = {};
-    for (const m of past) {
-      const d = m.startDate ? new Date(m.startDate).toLocaleDateString('ru-RU', {day:'numeric',month:'long'}) : 'Неизвестно';
-      if (!byDate[d]) byDate[d] = [];
-      byDate[d].push(m);
-    }
-    for (const [date, items] of Object.entries(byDate)) {
-      html += `<tr><td colspan="7" style="padding:6px 12px 2px;font-size:11px;color:var(--text3);
-        background:var(--bg);border-bottom:1px solid var(--border);letter-spacing:0.04em">${date}</td></tr>`;
-      for (const m of items) html += renderRow(m, now, true);
-    }
-  }
+  // Обновляем счётчик на кнопке фильтра
+  const pastBtn = document.getElementById('pastBtn');
+  if (pastBtn) pastBtn.textContent = `Прошедшие (${pastCount}) ▾`;
 
   if (!html) {
     html = '<tr><td colspan="7" style="text-align:center;padding:3rem;color:var(--text3);font-size:13px">Матчи не найдены</td></tr>';
@@ -431,10 +411,46 @@ function renderRow(m, now, isPastRow = false) {
   </tr>`;
 }
 
-function togglePast() {
-  showPast = !showPast;
-  render();
+function openPastModal() {
+  const { past } = getVisible();
+  const modal = document.getElementById('pastModal');
+  const body  = document.getElementById('pastModalBody');
+  if (!past || !past.length) {
+    body.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text3)">Прошедших матчей нет</div>';
+  } else {
+    const now = new Date();
+    // Группируем по дате
+    const byDate = {};
+    for (const m of past) {
+      const d = m.startDate
+        ? new Date(m.startDate).toLocaleDateString('ru-RU', {day:'numeric',month:'long',year:'numeric'})
+        : 'Неизвестно';
+      if (!byDate[d]) byDate[d] = [];
+      byDate[d].push(m);
+    }
+    let html2 = '<table style="width:100%;border-collapse:collapse;font-size:13px">';
+    for (const [date, items] of Object.entries(byDate)) {
+      html2 += `<tr><td colspan="6" style="padding:10px 12px 4px;font-size:11px;color:var(--text3);
+        letter-spacing:0.04em;border-bottom:1px solid var(--border)">${date}</td></tr>`;
+      for (const m of items) html2 += renderRow(m, now, true);
+    }
+    html2 += '</table>';
+    body.innerHTML = html2;
+  }
+  modal.style.display = 'block';
+  document.body.style.overflow = 'hidden';
 }
+
+function closePastModal() {
+  document.getElementById('pastModal').style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+// Клик на фон модалки — закрыть
+document.addEventListener('click', e => {
+  const modal = document.getElementById('pastModal');
+  if (e.target === modal) closePastModal();
+});
 
 function updateStats() {
   const now = new Date();
@@ -464,14 +480,17 @@ function toggleNotif(id, t1, t2) {
   updateStats(); render();
 }
 
-function toggleGlobal() {
-  globalNotif = !globalNotif;
-  allMatches.forEach(m => { notifs[m.id] = globalNotif; });
-  const btn = document.getElementById('globalNotifBtn');
-  if (globalNotif) { btn.textContent='🔔 Алерты вкл.'; btn.classList.add('on'); showToast('🔔 Все алерты','За 5 мин до каждого матча'); }
-  else             { btn.textContent='🔕 Алерты';      btn.classList.remove('on'); }
+function toggleUpcomingNotifs() {
+  // Включаем алерты только для матчей стартующих в ближайшие 24 часа
+  const in24h = new Date(Date.now() + 24*60*60*1000);
+  const upcoming = allMatches.filter(m => !m.past && !m.live && m.startDate && new Date(m.startDate) <= in24h);
+  if (!upcoming.length) { showToast('Нет ближайших матчей', 'Нет матчей в ближайшие 24 часа'); return; }
+  upcoming.forEach(m => { notifs[m.id] = true; });
+  showToast(`🔔 Алерты включены`, `${upcoming.length} матч(ей) в ближайшие 24 ч — уведомим за 5 мин`);
   updateStats(); render();
 }
+
+function toggleGlobal() { toggleUpcomingNotifs(); }
 
 function checkAlerts() {
   const now = new Date();
@@ -518,16 +537,22 @@ function fmtVol(v) {
 
 function guessEventShort(title) {
   if (!title) return 'CS2 Match';
-  if (/blast.*rotterdam/i.test(title)) return 'BLAST Rotterdam';
-  if (/blast/i.test(title))            return 'BLAST';
-  if (/esl.*challenger/i.test(title))  return 'ESL Challenger';
-  if (/esl.*pro/i.test(title))         return 'ESL Pro League';
-  if (/esl/i.test(title))              return 'ESL';
-  if (/cct/i.test(title))              return 'CCT';
-  if (/pgl.*major/i.test(title))       return 'PGL Major';
-  if (/major/i.test(title))            return 'CS2 Major';
-  if (/iem/i.test(title))              return 'IEM';
-  return title.length > 24 ? title.slice(0,22)+'…' : title;
+  // Сначала ищем точные турниры
+  if (/blast.*open.*rotterdam/i.test(title))   return 'BLAST Open Rotterdam';
+  if (/blast.*rotterdam/i.test(title))         return 'BLAST Rotterdam';
+  if (/blast/i.test(title))                    return 'BLAST';
+  if (/esl.*pro.*league/i.test(title))         return 'ESL Pro League';
+  if (/esl.*challenger/i.test(title))          return 'ESL Challenger';
+  if (/esl/i.test(title))                      return 'ESL';
+  if (/cct.*south/i.test(title))               return 'CCT South America';
+  if (/cct.*europe/i.test(title))              return 'CCT Europe';
+  if (/cct/i.test(title))                      return 'CCT';
+  if (/pgl.*major/i.test(title))               return 'PGL Major';
+  if (/major/i.test(title))                    return 'CS2 Major';
+  if (/iem/i.test(title))                      return 'IEM';
+  // Убираем "Counter-Strike: " префикс который Polymarket ставит
+  const clean = title.replace(/^counter-strike:\s*/i, '').replace(/\s+(group [a-z]|round \d+|bo\d).*/i, '').trim();
+  return clean.length > 22 ? clean.slice(0,20)+'…' : clean;
 }
 
 function esc(s) {
@@ -573,5 +598,16 @@ setInterval(checkAlerts, 15000);
 setInterval(()=>render(), 60000);
 </script>
 >
+
+<!-- PAST MODAL -->
+<div id="pastModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:500;overflow-y:auto;">
+  <div style="max-width:900px;margin:40px auto;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:0 0 20px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg2);z-index:1;">
+      <div style="font-size:15px;font-weight:600;color:var(--text)">Прошедшие матчи</div>
+      <button onclick="closePastModal()" style="background:transparent;border:1px solid var(--border);border-radius:var(--radius-sm);padding:5px 12px;font-size:12px;color:var(--text2);cursor:pointer;">✕ Закрыть</button>
+    </div>
+    <div id="pastModalBody" style="padding:0 12px;"></div>
+  </div>
+</div>
 </body>
 </html>
