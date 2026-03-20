@@ -242,161 +242,121 @@ const notifs = {};
 const alerted = new Set();
 
 // ─── FETCH ───────────────────────────────────────────────
+// /api/proxy тянет /markets?tag_id=100780 — CS2 game-маркеты
+// каждый объект = один матч с полями: outcomes, outcomePrices, gameStartTime, teamAID, teamBID
 async function fetchData() {
   setStatus('loading', 'Загрузка...');
   try {
-    // /api/proxy — serverless функция на Vercel, проксирует к Polymarket без CORS
     const res = await fetch('/api/proxy?limit=100');
     if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
-    const parsed = parseEvents(data);
-    if (parsed.length > 0) {
-      markets = parsed;
-      hideErr();
-    } else {
-      throw new Error('0 матчей в ответе');
-    }
-    setStatus('ok', 'Live · Polymarket API');
+    const json = await res.json();
+    // Прокси возвращает {source, data} или просто массив (fallback)
+    const raw = Array.isArray(json) ? json : (json.data || []);
+    const src = json.source || 'unknown';
+    if (!Array.isArray(raw)) throw new Error('Неверный формат ответа');
+    const parsed = parseMarkets(raw);
+    if (parsed.length > 0) { markets = parsed; hideErr(); }
+    else throw new Error('0 матчей (source: ' + src + ')');
+    setStatus('ok', 'Live · Polymarket (' + src + ')');
     document.getElementById('updatedTxt').textContent =
-      'Обновлено: ' + new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      'Обновлено: ' + new Date().toLocaleTimeString('ru-RU', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
   } catch (e) {
     setStatus('error', 'Ошибка API');
-    showErr('Не удалось загрузить данные: ' + e.message + '. Показываем демо-данные.');
+    showErr('Ошибка загрузки: ' + e.message + '. Показываем демо-данные.');
     if (markets.length === 0) markets = demoData();
   }
   updateStats();
   render();
 }
 
-function parseEvents(events) {
-  const list = Array.isArray(events) ? events : [];
+// ─── PARSE /markets ───────────────────────────────────────
+// Структура game-маркета из Polymarket /markets:
+//   outcomes      = '["Team A","Team B"]'   — имена команд
+//   outcomePrices = '["0.65","0.35"]'        — шансы
+//   gameStartTime = "2026-03-21T17:00:00Z"  — старт матча
+//   volume        = "12345.67"
+//   slug          = "faze-vs-team-spirit-..."
+//   events[0].title — название турнира
+function parseMarkets(data) {
   const result = [];
-  for (const ev of list) {
-    if (!ev) continue;
-    const title = ev.title || ev.question || '';
-    const slug = ev.slug || '';
-    const mlist = Array.isArray(ev.markets) ? ev.markets : [];
-    let volume = 0;
-    let polyUrl = `https://polymarket.com/event/${slug}`;
+  for (const m of data) {
+    const outcomes = tryJson(m.outcomes, []);
+    const prices   = tryJson(m.outcomePrices, []);
 
-    // Для CS2 каждый market = один матч (одна команда = Yes исход)
-    // Если у ивента один рынок с двумя исходами — это матч
-    // Если несколько markets — это группа/серия матчей
-    for (const m of mlist) {
-      volume += parseFloat(m.volume || 0);
-      if (m.slug) polyUrl = `https://polymarket.com/event/${m.slug}`;
+    // Имена команд — из outcomes (самый точный источник)
+    let team1 = cleanTeam(outcomes[0] || '');
+    let team2 = cleanTeam(outcomes[1] || '');
+
+    // Если outcomes пустые — пробуем из question/title
+    if (!team1 && !team2) {
+      const title = m.question || m.eventTitle || '';
+      const match = title.match(/^(.+?)\s+vs\.?\s+(.+?)(?:\s*[\|\-\(]|$)/i);
+      if (match) { team1 = match[1].trim(); team2 = match[2].trim(); }
     }
 
-    // Извлекаем команды: сначала из outcomes, потом из title/slug
-    let team1 = 'Team A', team2 = 'Team B';
-    let t1odds = 0.5, t2odds = 0.5;
+    // Пропускаем маркеты без команд (futures типа "Will X win a tier-1...")
+    if (!team1 || !team2) continue;
 
-    if (mlist.length === 1) {
-      // Один рынок: outcomes[0]=team1 YES, outcomes[1]=team2 YES
-      const m = mlist[0];
-      const outcomes = tryParseJson(m.outcomes || '[]');
-      const prices = tryParseJson(m.outcomePrices || '[]');
-      if (outcomes.length >= 2) {
-        team1 = outcomes[0] || 'Team A';
-        team2 = outcomes[1] || 'Team B';
-      } else {
-        [team1, team2] = extractTeams(title, slug);
-      }
-      if (prices.length >= 2) {
-        t1odds = +prices[0] || 0.5;
-        t2odds = +prices[1] || 0.5;
-      }
-    } else if (mlist.length >= 2) {
-      // Несколько markets = несколько матчей в серии — берём первый активный
-      // Или это один матч с outcomes в разных markets
-      const outcomes = mlist.map(m => {
-        const o = tryParseJson(m.outcomes || '[]');
-        return o[0] || m.question || '';
-      });
-      if (outcomes[0] && outcomes[1]) {
-        team1 = outcomes[0];
-        team2 = outcomes[1];
-        const p1 = tryParseJson(mlist[0].outcomePrices || '[]');
-        const p2 = tryParseJson(mlist[1].outcomePrices || '[]');
-        t1odds = +p1[0] || 0.5;
-        t2odds = +p2[0] || 0.5;
-        if (Math.abs(t1odds + t2odds - 1) > 0.3) {
-          // Не сумма ~1 — значит это не пара исходов одного матча
-          [team1, team2] = extractTeams(title, slug);
-          t1odds = 0.5; t2odds = 0.5;
-        }
-      } else {
-        [team1, team2] = extractTeams(title, slug);
-      }
-    } else {
-      [team1, team2] = extractTeams(title, slug);
-    }
+    const t1odds = parseFloat(prices[0]) || 0.5;
+    const t2odds = parseFloat(prices[1]) || 0.5;
+    const volume = parseFloat(m.volume || m.volumeNum || 0);
 
-    // Чистим имена команд от артефактов
-    team1 = cleanTeam(team1);
-    team2 = cleanTeam(team2);
+    // Время: gameStartTime — точное время начала матча
+    const gameTime  = m.gameStartTime || m.startDate || m.endDate || null;
+    const startDate = gameTime ? new Date(gameTime) : null;
+    const isLive    = !!(m.active && startDate && startDate < new Date() && !m.closed);
 
-    const startDate = ev.startDate ? new Date(ev.startDate) : null;
-    const endDate = ev.endDate ? new Date(ev.endDate) : null;
-    const isLive = !!(ev.active && startDate && startDate < new Date() && (!endDate || endDate > new Date()));
-    const eventName = guessEvent(slug + ' ' + title);
+    // Турнир — из eventTitle (прокси передаёт его) или из slug/question
+    const srcStr  = (m.eventTitle || '') + ' ' + (m.eventSlug || '') + ' ' + (m.question || '');
+    const eventName = guessEvent(srcStr);
+
+    const polyUrl = m.eventSlug
+      ? `https://polymarket.com/event/${m.eventSlug}`
+      : m.slug
+        ? `https://polymarket.com/event/${m.slug}`
+        : `https://polymarket.com/sports/counter-strike/games`;
 
     result.push({
-      id: ev.id || slug,
-      team1, team2, t1odds, t2odds, volume,
+      id: m.id || m.slug,
+      team1, team2,
+      t1odds, t2odds, volume,
       event: guessEventType(eventName),
       eventName, startDate, live: isLive,
-      polyUrl
+      polyUrl,
+      format: m.formatType || 'BO3'
     });
   }
   return result;
 }
 
-function tryParseJson(str) {
-  try { return JSON.parse(str) || []; } catch { return []; }
+function tryJson(str, def) {
+  try { return JSON.parse(str) || def; } catch { return def; }
 }
 
 function cleanTeam(s) {
   return String(s)
-    .replace(/\s*will win.*$/i, '')
-    .replace(/\s*to win.*$/i, '')
-    .replace(/^will\s+/i, '')
+    .replace(/\s+will win.*/i, '')
+    .replace(/\s+to win.*/i, '')
     .trim();
 }
 
-function extractTeams(title, slug) {
-  const m = title.match(/^(.+?)\s+vs\.?\s+(.+?)(?:\s*[\|\-\(]|$)/i);
-  if (m) return [m[1].trim(), m[2].trim()];
-  const p = slug.replace(/-will-win.*$/, '').replace(/-to-win.*$/, '').split('-vs-');
-  if (p.length === 2) return [cap(p[0]), cap(p[1])];
-  // Попробуем разбить по дефису пополам
-  const words = slug.split('-');
-  if (words.length >= 4) {
-    const mid = Math.floor(words.length / 2);
-    return [cap(words.slice(0, mid).join('-')), cap(words.slice(mid).join('-'))];
-  }
-  return [cap(slug) || 'Team A', 'Team B'];
-}
-
-function cap(s) { return s.replace(/-/g,' ').replace(/\b\w/g, c => c.toUpperCase()); }
-
 function guessEvent(str) {
-  if (/blast.*rotterdam/i.test(str)) return 'BLAST Rotterdam';
-  if (/blast/i.test(str)) return 'BLAST';
-  if (/esl.*challenger/i.test(str)) return 'ESL Challenger';
-  if (/esl.*pro/i.test(str)) return 'ESL Pro League';
-  if (/esl/i.test(str)) return 'ESL';
-  if (/cct/i.test(str)) return 'CCT';
-  if (/major/i.test(str)) return 'CS2 Major';
-  if (/pgl/i.test(str)) return 'PGL';
-  if (/iem/i.test(str)) return 'IEM';
-  if (/ecs/i.test(str)) return 'ECS';
+  const s = str.toLowerCase();
+  if (/blast.*rotterdam/i.test(s)) return 'BLAST Rotterdam';
+  if (/blast/i.test(s))            return 'BLAST';
+  if (/esl.*challenger/i.test(s))  return 'ESL Challenger';
+  if (/esl.*pro/i.test(s))         return 'ESL Pro League';
+  if (/esl/i.test(s))              return 'ESL';
+  if (/cct/i.test(s))              return 'CCT';
+  if (/major/i.test(s))            return 'CS2 Major';
+  if (/pgl/i.test(s))              return 'PGL';
+  if (/iem/i.test(s))              return 'IEM';
   return 'CS2 Match';
 }
 
 function guessEventType(name) {
   if (/blast/i.test(name)) return 'blast';
-  if (/esl/i.test(name)) return 'esl';
+  if (/esl/i.test(name))   return 'esl';
   return 'other';
 }
 
@@ -404,10 +364,10 @@ function guessEventType(name) {
 function getFiltered() {
   const q = (document.getElementById('searchInput').value || '').toLowerCase().trim();
   return markets.filter(m => {
-    if (activeFilter === 'blast' && m.event !== 'blast') return false;
-    if (activeFilter === 'esl' && m.event !== 'esl') return false;
-    if (activeFilter === 'live' && !m.live) return false;
-    if (activeFilter === 'upcoming' && m.live) return false;
+    if (activeFilter === 'blast'    && m.event !== 'blast') return false;
+    if (activeFilter === 'esl'      && m.event !== 'esl')   return false;
+    if (activeFilter === 'live'     && !m.live)             return false;
+    if (activeFilter === 'upcoming' && m.live)              return false;
     if (q && !m.team1.toLowerCase().includes(q) && !m.team2.toLowerCase().includes(q)) return false;
     return true;
   });
@@ -422,35 +382,39 @@ function render() {
   }
   const now = new Date();
   tbody.innerHTML = list.map(m => {
-    const p1 = Math.round(m.t1odds * 100);
-    const p2 = Math.round(m.t2odds * 100);
+    const p1   = Math.round(m.t1odds * 100);
+    const p2   = Math.round(m.t2odds * 100);
     const fav1 = m.t1odds >= m.t2odds;
-    const c1 = fav1 ? '#4caf7d' : '#555970';
-    const c2 = !fav1 ? '#4caf7d' : '#555970';
-    const ec = m.event === 'blast' ? 'ev-blast' : m.event === 'esl' ? 'ev-esl' : 'ev-other';
-    const on = !!notifs[m.id];
+    const c1   = fav1  ? '#4caf7d' : '#555970';
+    const c2   = !fav1 ? '#4caf7d' : '#555970';
+    const ec   = m.event === 'blast' ? 'ev-blast' : m.event === 'esl' ? 'ev-esl' : 'ev-other';
+    const on   = !!notifs[m.id];
+
     let timeHtml = '';
     if (m.live) {
       timeHtml = `<span class="live-badge"><span class="live-dot"></span>LIVE</span>`;
     } else {
-      const cd = m.startDate ? countdown(m.startDate) : null;
+      const cd   = m.startDate ? countdown(m.startDate) : null;
       const diff = m.startDate ? (m.startDate - now) : null;
-      const cdClass = diff && diff < 5*60000 ? 'countdown verysoon' : diff && diff < 15*60000 ? 'countdown soon' : 'countdown';
+      const cdClass = diff && diff < 5*60000 ? 'countdown verysoon'
+                    : diff && diff < 15*60000 ? 'countdown soon'
+                    : 'countdown';
       timeHtml = `
         <div class="time-main">${m.startDate ? fmtTime(m.startDate) : '—'}</div>
         <div class="time-date">${m.startDate ? fmtDate(m.startDate) : ''}</div>
         ${cd ? `<div class="${cdClass}">${cd}</div>` : ''}
       `;
     }
+
     return `<tr>
       <td>${timeHtml}</td>
       <td>
         <div class="match-teams">
-          <span class="team ${fav1?'fav':''}">${esc(m.team1)}</span>
+          <span class="team ${fav1 ? 'fav' : ''}">${esc(m.team1)}</span>
           <span class="vs">vs</span>
-          <span class="team ${!fav1?'fav':''}">${esc(m.team2)}</span>
+          <span class="team ${!fav1 ? 'fav' : ''}">${esc(m.team2)}</span>
         </div>
-        <div class="match-format">BO3</div>
+        <div class="match-format">${esc(m.format)}</div>
       </td>
       <td><span class="ev-badge ${ec}">${esc(m.eventName)}</span></td>
       <td>
@@ -458,12 +422,12 @@ function render() {
           <div class="odds-row">
             <span class="odds-name">${esc(m.team1)}</span>
             <div class="odds-bar-bg"><div class="odds-bar-fill" style="width:${p1}%;background:${c1}"></div></div>
-            <span class="odds-val ${fav1?'fav':'und'}">${p1}¢</span>
+            <span class="odds-val ${fav1 ? 'fav' : 'und'}">${p1}¢</span>
           </div>
           <div class="odds-row">
             <span class="odds-name">${esc(m.team2)}</span>
             <div class="odds-bar-bg"><div class="odds-bar-fill" style="width:${p2}%;background:${c2}"></div></div>
-            <span class="odds-val ${!fav1?'fav':'und'}">${p2}¢</span>
+            <span class="odds-val ${!fav1 ? 'fav' : 'und'}">${p2}¢</span>
           </div>
         </div>
       </td>
@@ -471,18 +435,18 @@ function render() {
         <div class="vol-main">${fmtVol(m.volume)}</div>
         <div class="vol-sub">объём</div>
       </td>
-      <td><span class="bell ${on?'on':''}" onclick="toggleNotif('${m.id}','${esc(m.team1)}','${esc(m.team2)}')">${on?'🔔':'🔕'}</span></td>
+      <td><span class="bell ${on ? 'on' : ''}" onclick="toggleNotif('${m.id}','${esc(m.team1)}','${esc(m.team2)}')">${on ? '🔔' : '🔕'}</span></td>
       <td style="text-align:right"><a class="bet-link" href="${m.polyUrl}" target="_blank" rel="noopener">Ставить ↗</a></td>
     </tr>`;
   }).join('');
 }
 
 function updateStats() {
-  const live = markets.filter(m => m.live).length;
-  const vol = markets.reduce((s, m) => s + m.volume, 0);
+  const live   = markets.filter(m => m.live).length;
+  const vol    = markets.reduce((s, m) => s + m.volume, 0);
   const alerts = Object.values(notifs).filter(Boolean).length;
-  document.getElementById('statTotal').textContent = markets.length;
-  document.getElementById('statLive').textContent = live;
+  document.getElementById('statTotal').textContent  = markets.length;
+  document.getElementById('statLive').textContent   = live;
   document.getElementById('statVolume').textContent = fmtVol(vol);
   document.getElementById('statAlerts').textContent = alerts;
 }
@@ -499,9 +463,8 @@ function setFilter(f, btn) {
 function toggleNotif(id, t1, t2) {
   notifs[id] = !notifs[id];
   if (notifs[id]) showToast('🔔 Алерт включён', `${t1} vs ${t2} — уведомим за 5 мин`);
-  else showToast('🔕 Алерт снят', `${t1} vs ${t2}`);
-  updateStats();
-  render();
+  else            showToast('🔕 Алерт снят',    `${t1} vs ${t2}`);
+  updateStats(); render();
 }
 
 function toggleGlobal() {
@@ -509,15 +472,12 @@ function toggleGlobal() {
   markets.forEach(m => { notifs[m.id] = globalNotif; });
   const btn = document.getElementById('globalNotifBtn');
   if (globalNotif) {
-    btn.textContent = '🔔 Алерты вкл.';
-    btn.classList.add('on');
+    btn.textContent = '🔔 Алерты вкл.'; btn.classList.add('on');
     showToast('🔔 Все алерты включены', 'Уведомим за 5 мин до каждого матча');
   } else {
-    btn.textContent = '🔕 Алерты';
-    btn.classList.remove('on');
+    btn.textContent = '🔕 Алерты'; btn.classList.remove('on');
   }
-  updateStats();
-  render();
+  updateStats(); render();
 }
 
 function checkAlerts() {
@@ -528,7 +488,7 @@ function checkAlerts() {
     if (diff > 0 && diff <= 5 * 60000) {
       alerted.add(m.id);
       const mins = Math.ceil(diff / 60000);
-      showToast(`⚠️ ${m.team1} vs ${m.team2}`, `Матч начнётся через ${mins} мин · ${m.eventName}`);
+      showToast(`⚠️ ${m.team1} vs ${m.team2}`, `Матч через ${mins} мин · ${m.eventName}`);
       if ('Notification' in window && Notification.permission === 'granted') {
         new Notification('CS2 · Polymarket', { body: `${m.team1} vs ${m.team2} через ${mins} мин!` });
       }
@@ -537,16 +497,14 @@ function checkAlerts() {
 }
 
 // ─── HELPERS ─────────────────────────────────────────────
-function fmtTime(d) {
-  return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-}
+function fmtTime(d) { return d.toLocaleTimeString('ru-RU', {hour:'2-digit',minute:'2-digit'}); }
 
 function fmtDate(d) {
   const now = new Date(), tom = new Date(now);
   tom.setDate(now.getDate() + 1);
   if (d.toDateString() === now.toDateString()) return 'Сегодня';
   if (d.toDateString() === tom.toDateString()) return 'Завтра';
-  return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
+  return d.toLocaleDateString('ru-RU', {day:'numeric', month:'short'});
 }
 
 function countdown(d) {
@@ -558,9 +516,9 @@ function countdown(d) {
 }
 
 function fmtVol(v) {
-  if (v >= 1e6) return '$' + (v / 1e6).toFixed(1) + 'M';
-  if (v >= 1e3) return '$' + Math.round(v / 1e3) + 'K';
-  if (v === 0) return '—';
+  if (v >= 1e6) return '$' + (v/1e6).toFixed(1) + 'M';
+  if (v >= 1e3) return '$' + Math.round(v/1e3) + 'K';
+  if (v === 0)  return '—';
   return '$' + Math.round(v);
 }
 
@@ -570,40 +528,36 @@ function esc(s) {
 
 function setStatus(type, text) {
   const dot = document.getElementById('statusDot');
-  dot.className = 'status-dot' + (type === 'ok' ? '' : type === 'loading' ? ' loading' : ' error');
+  dot.className = 'status-dot' + (type==='ok' ? '' : type==='loading' ? ' loading' : ' error');
   document.getElementById('statusText').textContent = text;
 }
 
 function showErr(msg) {
   const b = document.getElementById('errBar');
-  b.textContent = msg;
-  b.style.display = 'block';
+  b.textContent = msg; b.style.display = 'block';
 }
-
-function hideErr() {
-  document.getElementById('errBar').style.display = 'none';
-}
+function hideErr() { document.getElementById('errBar').style.display = 'none'; }
 
 function showToast(title, body) {
   document.getElementById('toastTitle').textContent = title;
-  document.getElementById('toastBody').textContent = body;
+  document.getElementById('toastBody').textContent  = body;
   const t = document.getElementById('toast');
   t.classList.add('show');
   clearTimeout(t._timer);
   t._timer = setTimeout(() => t.classList.remove('show'), 3500);
 }
 
-// ─── DEMO DATA ────────────────────────────────────────────
+// ─── DEMO DATA ─────────────────────────────────────────────
 function demoData() {
   const b = new Date();
-  const ah = (h, m = 0) => new Date(b.getTime() + (h * 60 + m) * 60000);
+  const ah = (h, m=0) => new Date(b.getTime() + (h*60+m)*60000);
   return [
-    { id:'d1', live:true, team1:'Vitality', team2:'NAVI', t1odds:0.71, t2odds:0.29, volume:2100000, event:'blast', eventName:'BLAST Rotterdam', startDate:new Date(b-25*60000), polyUrl:'https://polymarket.com/predictions/cs2' },
-    { id:'d2', live:false, team1:'FaZe', team2:'The MongolZ', t1odds:0.44, t2odds:0.56, volume:1800000, event:'blast', eventName:'BLAST Rotterdam', startDate:ah(0,4), polyUrl:'https://polymarket.com/predictions/cs2' },
-    { id:'d3', live:false, team1:'G2 Esports', team2:'Heroic', t1odds:0.67, t2odds:0.33, volume:940000, event:'blast', eventName:'BLAST Rotterdam', startDate:ah(2,30), polyUrl:'https://polymarket.com/predictions/cs2' },
-    { id:'d4', live:false, team1:'Spirit', team2:'MOUZ', t1odds:0.58, t2odds:0.42, volume:670000, event:'blast', eventName:'BLAST Rotterdam', startDate:ah(5), polyUrl:'https://polymarket.com/predictions/cs2' },
-    { id:'d5', live:false, team1:'Cloud9', team2:'B8', t1odds:0.61, t2odds:0.39, volume:410000, event:'blast', eventName:'BLAST Rotterdam', startDate:ah(7,30), polyUrl:'https://polymarket.com/predictions/cs2' },
-    { id:'d6', live:false, team1:'NRG', team2:'TYLOO', t1odds:0.82, t2odds:0.18, volume:280000, event:'esl', eventName:'ESL Pro League', startDate:ah(10), polyUrl:'https://polymarket.com/predictions/cs2' },
+    {id:'d1', live:true,  team1:'Ex-Zero Tenacity', team2:'HAVU',          t1odds:0.01, t2odds:0.99, volume:79560,  event:'esl',   eventName:'ESL Challenger', startDate:new Date(b-25*60000), polyUrl:'https://polymarket.com/sports/counter-strike/games', format:'BO3'},
+    {id:'d2', live:true,  team1:'UNiTY Esports',    team2:'G2 Ares',       t1odds:0.54, t2odds:0.46, volume:20360,  event:'esl',   eventName:'ESL Challenger', startDate:new Date(b-10*60000), polyUrl:'https://polymarket.com/sports/counter-strike/games', format:'BO3'},
+    {id:'d3', live:false, team1:'Ex-Zero Tenacity', team2:'Supernova',     t1odds:0.51, t2odds:0.49, volume:362,    event:'other', eventName:'CCT',            startDate:ah(0,30),            polyUrl:'https://polymarket.com/sports/counter-strike/games', format:'BO3'},
+    {id:'d4', live:false, team1:'FURIA',            team2:'Aurora Gaming', t1odds:0.64, t2odds:0.36, volume:430610, event:'blast', eventName:'BLAST Rotterdam', startDate:ah(2),               polyUrl:'https://polymarket.com/sports/counter-strike/games', format:'BO3'},
+    {id:'d5', live:false, team1:'Crashers',         team2:'Back To Back',  t1odds:0.56, t2odds:0.44, volume:3350,   event:'other', eventName:'CCT',            startDate:ah(2),               polyUrl:'https://polymarket.com/sports/counter-strike/games', format:'BO3'},
+    {id:'d6', live:false, team1:'Vitality',         team2:'NAVI',          t1odds:0.71, t2odds:0.29, volume:2100000,event:'blast', eventName:'BLAST Rotterdam', startDate:ah(4),               polyUrl:'https://polymarket.com/sports/counter-strike/games', format:'BO3'},
   ];
 }
 
@@ -611,7 +565,8 @@ function demoData() {
 fetchData();
 setInterval(fetchData, 30000);
 setInterval(checkAlerts, 15000);
-setInterval(() => render(), 60000); // обновлять таймеры
+setInterval(() => render(), 60000);
+
 </script>
 </body>
 </html>
