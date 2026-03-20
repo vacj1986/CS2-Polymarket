@@ -246,7 +246,7 @@ async function fetchData() {
   setStatus('loading', 'Загрузка...');
   try {
     // /api/proxy — serverless функция на Vercel, проксирует к Polymarket без CORS
-    const res = await fetch('/api/proxy?tag=cs2&limit=50');
+    const res = await fetch('/api/proxy?limit=100');
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     const parsed = parseEvents(data);
@@ -270,53 +270,127 @@ async function fetchData() {
 
 function parseEvents(events) {
   const list = Array.isArray(events) ? events : [];
-  return list.map(ev => {
-    if (!ev) return null;
+  const result = [];
+  for (const ev of list) {
+    if (!ev) continue;
     const title = ev.title || ev.question || '';
     const slug = ev.slug || '';
     const mlist = Array.isArray(ev.markets) ? ev.markets : [];
-    let t1odds = 0.5, t2odds = 0.5, volume = 0, polyUrl = '', conditionId = '';
+    let volume = 0;
+    let polyUrl = `https://polymarket.com/event/${slug}`;
+
+    // Для CS2 каждый market = один матч (одна команда = Yes исход)
+    // Если у ивента один рынок с двумя исходами — это матч
+    // Если несколько markets — это группа/серия матчей
     for (const m of mlist) {
-      try {
-        const op = JSON.parse(m.outcomePrices || '[]');
-        if (op.length >= 2) { t1odds = +op[0] || 0.5; t2odds = +op[1] || 0.5; }
-      } catch {}
       volume += parseFloat(m.volume || 0);
-      if (!polyUrl && m.slug) polyUrl = `https://polymarket.com/event/${m.slug}`;
-      if (m.conditionId) conditionId = m.conditionId;
+      if (m.slug) polyUrl = `https://polymarket.com/event/${m.slug}`;
     }
-    if (!polyUrl) polyUrl = `https://polymarket.com/event/${slug}`;
-    const teams = extractTeams(title, slug);
+
+    // Извлекаем команды: сначала из outcomes, потом из title/slug
+    let team1 = 'Team A', team2 = 'Team B';
+    let t1odds = 0.5, t2odds = 0.5;
+
+    if (mlist.length === 1) {
+      // Один рынок: outcomes[0]=team1 YES, outcomes[1]=team2 YES
+      const m = mlist[0];
+      const outcomes = tryParseJson(m.outcomes || '[]');
+      const prices = tryParseJson(m.outcomePrices || '[]');
+      if (outcomes.length >= 2) {
+        team1 = outcomes[0] || 'Team A';
+        team2 = outcomes[1] || 'Team B';
+      } else {
+        [team1, team2] = extractTeams(title, slug);
+      }
+      if (prices.length >= 2) {
+        t1odds = +prices[0] || 0.5;
+        t2odds = +prices[1] || 0.5;
+      }
+    } else if (mlist.length >= 2) {
+      // Несколько markets = несколько матчей в серии — берём первый активный
+      // Или это один матч с outcomes в разных markets
+      const outcomes = mlist.map(m => {
+        const o = tryParseJson(m.outcomes || '[]');
+        return o[0] || m.question || '';
+      });
+      if (outcomes[0] && outcomes[1]) {
+        team1 = outcomes[0];
+        team2 = outcomes[1];
+        const p1 = tryParseJson(mlist[0].outcomePrices || '[]');
+        const p2 = tryParseJson(mlist[1].outcomePrices || '[]');
+        t1odds = +p1[0] || 0.5;
+        t2odds = +p2[0] || 0.5;
+        if (Math.abs(t1odds + t2odds - 1) > 0.3) {
+          // Не сумма ~1 — значит это не пара исходов одного матча
+          [team1, team2] = extractTeams(title, slug);
+          t1odds = 0.5; t2odds = 0.5;
+        }
+      } else {
+        [team1, team2] = extractTeams(title, slug);
+      }
+    } else {
+      [team1, team2] = extractTeams(title, slug);
+    }
+
+    // Чистим имена команд от артефактов
+    team1 = cleanTeam(team1);
+    team2 = cleanTeam(team2);
+
     const startDate = ev.startDate ? new Date(ev.startDate) : null;
-    const isLive = !!(ev.active && startDate && startDate < new Date());
+    const endDate = ev.endDate ? new Date(ev.endDate) : null;
+    const isLive = !!(ev.active && startDate && startDate < new Date() && (!endDate || endDate > new Date()));
     const eventName = guessEvent(slug + ' ' + title);
-    return {
+
+    result.push({
       id: ev.id || slug,
-      team1: teams[0], team2: teams[1],
-      t1odds, t2odds, volume,
+      team1, team2, t1odds, t2odds, volume,
       event: guessEventType(eventName),
       eventName, startDate, live: isLive,
       polyUrl
-    };
-  }).filter(Boolean);
+    });
+  }
+  return result;
+}
+
+function tryParseJson(str) {
+  try { return JSON.parse(str) || []; } catch { return []; }
+}
+
+function cleanTeam(s) {
+  return String(s)
+    .replace(/\s*will win.*$/i, '')
+    .replace(/\s*to win.*$/i, '')
+    .replace(/^will\s+/i, '')
+    .trim();
 }
 
 function extractTeams(title, slug) {
   const m = title.match(/^(.+?)\s+vs\.?\s+(.+?)(?:\s*[\|\-\(]|$)/i);
   if (m) return [m[1].trim(), m[2].trim()];
-  const p = slug.replace(/-will-win.*$/, '').split('-vs-');
+  const p = slug.replace(/-will-win.*$/, '').replace(/-to-win.*$/, '').split('-vs-');
   if (p.length === 2) return [cap(p[0]), cap(p[1])];
-  return ['Team A', 'Team B'];
+  // Попробуем разбить по дефису пополам
+  const words = slug.split('-');
+  if (words.length >= 4) {
+    const mid = Math.floor(words.length / 2);
+    return [cap(words.slice(0, mid).join('-')), cap(words.slice(mid).join('-'))];
+  }
+  return [cap(slug) || 'Team A', 'Team B'];
 }
 
 function cap(s) { return s.replace(/-/g,' ').replace(/\b\w/g, c => c.toUpperCase()); }
 
 function guessEvent(str) {
-  if (/blast/i.test(str)) return 'BLAST Rotterdam';
-  if (/esl/i.test(str)) return 'ESL Pro League';
+  if (/blast.*rotterdam/i.test(str)) return 'BLAST Rotterdam';
+  if (/blast/i.test(str)) return 'BLAST';
+  if (/esl.*challenger/i.test(str)) return 'ESL Challenger';
+  if (/esl.*pro/i.test(str)) return 'ESL Pro League';
+  if (/esl/i.test(str)) return 'ESL';
+  if (/cct/i.test(str)) return 'CCT';
   if (/major/i.test(str)) return 'CS2 Major';
   if (/pgl/i.test(str)) return 'PGL';
   if (/iem/i.test(str)) return 'IEM';
+  if (/ecs/i.test(str)) return 'ECS';
   return 'CS2 Match';
 }
 
