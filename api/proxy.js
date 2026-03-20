@@ -1,5 +1,11 @@
 // api/proxy.js — проксирует запросы к Gamma API Polymarket
 // Нужен чтобы обойти CORS браузера
+//
+// CS2 sport metadata (из gamma-api.polymarket.com/sports):
+//   sport slug : cs2
+//   tag_id     : 100780  (основной тег Counter-Strike)
+//   series     : 10310
+//   resolution : https://hltv.org
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -11,11 +17,13 @@ export default async function handler(req, res) {
     return;
   }
 
-  const { tag, limit = '50' } = req.query;
-  const tagSlug = tag || 'cs2';
+  const { limit = '100' } = req.query;
 
   try {
-    const url = `https://gamma-api.polymarket.com/events?tag_slug=${tagSlug}&limit=${limit}&active=true&closed=false`;
+    // Используем tag_id=100780 — точный тег CS2 из /sports API
+    // related_tags=true — включает все под-турниры CS2
+    const url = `https://gamma-api.polymarket.com/events?tag_id=100780&related_tags=true&limit=${limit}&active=true&closed=false&order=startDate&ascending=true`;
+
     const upstream = await fetch(url, {
       headers: { 'User-Agent': 'cs2-polymarket-tracker/1.0' }
     });
